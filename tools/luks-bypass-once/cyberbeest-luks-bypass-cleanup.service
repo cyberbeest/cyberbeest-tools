@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove one-shot LUKS bypass key slot
+ConditionPathExists=/run/cyberbeest-bypass.key
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cyberbeest-luks-bypass-cleanup
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=Stage one-shot LUKS bypass key on /boot when rebooting
+RequiresMountsFor=/boot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/local/sbin/cyberbeest-luks-bypass-stage
+
+[Install]
+WantedBy=multi-user.target

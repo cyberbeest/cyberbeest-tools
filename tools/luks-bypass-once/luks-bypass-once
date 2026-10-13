@@ -1,0 +1,116 @@
+#!/bin/bash
+# Installed as /usr/local/sbin/luks-bypass-once. Arms a ONE-BOOT bypass of the
+# LUKS passphrase prompt. Less secure by design: while armed, a random key
+# sits unencrypted on /boot. See cyberbeest-askpass-boot-fresh (consumes it)
+# and cyberbeest-luks-bypass-cleanup (removes the key slot afterwards).
+#
+#   luks-bypass-once [--minutes N] [--reboot] [--stdin] [--luks-only]   arm
+#     (default: also one-shot autologin of the calling user on that boot)
+#   luks-bypass-once --status
+#   luks-bypass-once --cancel
+#
+# Arming stores the key only on the encrypted root (PENDING). The key reaches
+# /boot only when the machine REBOOTS (cyberbeest-luks-bypass-stage.service),
+# so arming and then powering off leaves nothing readable on the disk.
+# --minutes: how long after that staging the keyscript still honors the key.
+# --stdin: read the master password from stdin (automated tests).
+set -euo pipefail
+
+[ "$EUID" -eq 0 ] || exec sudo "$0" "$@"
+
+SLOT=7
+MINUTES=10
+MODE=arm
+DO_REBOOT=0
+USE_STDIN=0
+AUTOLOGIN_USER="${SUDO_USER:-}"
+AUTOLOGIN=/etc/lightdm/lightdm.conf.d/99-cyberbeest-bypass-autologin.conf
+PENDING=/etc/cyberbeest-bypass.pending
+KEY=/boot/cyberbeest-bypass.key
+UNTIL=/boot/cyberbeest-bypass.until
+CRYPT_UUID="$(awk '$1 !~ /^#/ && NF >= 2 {sub("UUID=", "", $2); print $2; exit}' /etc/crypttab)"
+DEV="/dev/disk/by-uuid/$CRYPT_UUID"
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--minutes) MINUTES="$2"; shift ;;
+	--reboot) DO_REBOOT=1 ;;
+	--stdin) USE_STDIN=1 ;;
+	--luks-only) AUTOLOGIN_USER="" ;;
+	--status) MODE=status ;;
+	--cancel) MODE=cancel ;;
+	*) echo "usage: $0 [--minutes N] [--reboot] [--stdin] [--luks-only] | --status | --cancel" >&2; exit 2 ;;
+	esac
+	shift
+done
+case "$MINUTES" in '' | *[!0-9]*) echo "--minutes needs a number" >&2; exit 2 ;; esac
+[ -b "$(readlink -f "$DEV")" ] || { echo "LUKS device not found: $DEV" >&2; exit 1; }
+
+slot_in_use() { cryptsetup luksDump "$DEV" | grep -q "^  $SLOT: luks2"; }
+
+ask_passphrase() {
+	local p
+	if [ "$USE_STDIN" -eq 1 ]; then
+		IFS= read -r p
+	else
+		IFS= read -rsp "Master password (needed to add/remove the temporary key): " p </dev/tty
+		echo >&2
+	fi
+	if [ -r /lib/cryptsetup/cyberbeest-passphrase-filter ]; then
+		. /lib/cryptsetup/cyberbeest-passphrase-filter
+		p="$(printf '%s' "$p" | cyberbeest_normalize_passphrase)"
+	fi
+	printf '%s' "$p"
+	# verify now so a typo fails before anything is changed
+	printf '%s' "$p" | cryptsetup open --test-passphrase --key-file=- "$DEV" \
+		|| { echo "Wrong master password." >&2; return 1; }
+}
+
+kill_slot() { # $1 = passphrase
+	printf '%s' "$1" | cryptsetup luksKillSlot --batch-mode --key-file=- "$DEV" "$SLOT"
+}
+
+case "$MODE" in
+status)
+	[ -f "$PENDING" ] && echo "ARMED: the next reboot (not poweroff) will skip the prompt."
+	if [ -f "$KEY" ]; then
+		left=$(( $(cat "$UNTIL" 2>/dev/null || echo 0) - $(date +%s) ))
+		echo "STAGED on /boot: the boot must happen within $(( left > 0 ? left : 0 )) s."
+	fi
+	[ -f "$AUTOLOGIN" ] && echo "WARNING: LightDM autologin file present (removed once the session is up)."
+	[ -f "$PENDING" ] || [ -f "$KEY" ] || echo "Not armed."
+	slot_in_use && echo "LUKS key slot $SLOT is in use." || echo "LUKS key slot $SLOT is free."
+	[ -f /run/cyberbeest-bypass.key ] && echo "Bypass key waiting in /run (cleanup service has not removed it yet)."  || true
+	;;
+cancel)
+	pass="$(ask_passphrase)" || exit 1
+	rm -f "$KEY" "$UNTIL" "$PENDING" "$AUTOLOGIN"
+	if slot_in_use; then kill_slot "$pass"; echo "Temporary key slot removed."; fi
+	rm -f /run/cyberbeest-bypass.key
+	echo "Bypass cancelled."
+	;;
+arm)
+	# ask_passphrase prints the verified passphrase on its own stdout
+	pass="$(ask_passphrase)" || exit 1
+	rm -f "$KEY" "$UNTIL" "$PENDING"
+	if slot_in_use; then
+		echo "Slot $SLOT holds a leftover temporary key; replacing it."
+		kill_slot "$pass"
+	fi
+	newkey="$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')"
+	# fast KDF is fine: the key is 256 random bits, not a human passphrase
+	newkeyfile="$(mktemp /run/luks-bypass-newkey.XXXXXX)"
+	trap 'rm -f "$newkeyfile"' EXIT
+	printf '%s' "$newkey" > "$newkeyfile"
+	printf '%s' "$pass" | cryptsetup luksAddKey --batch-mode --key-file=- \
+		--key-slot "$SLOT" --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+		"$DEV" "$newkeyfile"
+	( umask 077; printf '%s\n%s\n%s\n' "$newkey" "$MINUTES" "$AUTOLOGIN_USER" > "$PENDING" )
+	sync
+	echo "Armed. The next REBOOT will not ask for the master password (a poweroff leaves nothing on /boot)."
+	[ -z "$AUTOLOGIN_USER" ] || echo "That boot also logs in $AUTOLOGIN_USER automatically (LightDM autologin, removed once the session is up)."
+	echo "The key is staged on /boot at reboot, valid $MINUTES min, deleted the moment the boot reads it."
+	echo "Undo before rebooting: $0 --cancel"
+	if [ "$DO_REBOOT" -eq 1 ]; then echo "Rebooting now."; systemctl reboot; fi
+	;;
+esac

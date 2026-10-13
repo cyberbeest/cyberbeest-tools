@@ -1,0 +1,15 @@
+#!/bin/sh
+# Installed as /usr/local/sbin/cyberbeest-luks-bypass-cleanup, run once per
+# boot by cyberbeest-luks-bypass-cleanup.service. If the initramfs keyscript
+# left a bypass key in /run, use it to remove its own LUKS key slot, then
+# wipe it. Also clears any stray key files left on /boot.
+KEY=/run/cyberbeest-bypass.key
+[ -f "$KEY" ] || exit 0
+CRYPT_UUID="$(awk '$1 !~ /^#/ && NF >= 2 {sub("UUID=", "", $2); print $2; exit}' /etc/crypttab)"
+DEV="/dev/disk/by-uuid/$CRYPT_UUID"
+if cryptsetup luksRemoveKey "$DEV" "$KEY"; then
+	echo "one-shot LUKS bypass key slot removed"
+else
+	echo "luksRemoveKey failed (slot already gone?); run 'luks-bypass-once --cancel' to check" >&2
+fi
+rm -f "$KEY" /boot/cyberbeest-bypass.key /boot/cyberbeest-bypass.until

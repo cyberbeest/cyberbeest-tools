@@ -1,0 +1,17 @@
+#!/bin/sh
+# Installed as /usr/local/sbin/cyberbeest-luks-bypass-autologin-cleanup. Waits
+# until the autologin user's session exists (LightDM has read its config by
+# then), then removes the one-shot autologin file. Gives up waiting after 180 s
+# and removes it anyway: the file must never outlive a boot.
+F=/etc/lightdm/lightdm.conf.d/99-cyberbeest-bypass-autologin.conf
+[ -f "$F" ] || exit 0
+user="$(sed -n 's/^autologin-user=//p' "$F")"
+i=0
+while [ "$i" -lt 180 ]; do
+	loginctl list-sessions --no-legend 2>/dev/null | awk -v u="$user" '$3 == u { found = 1 } END { exit !found }' && break
+	sleep 1
+	i=$((i + 1))
+done
+sleep 3
+rm -f "$F"
+echo "one-shot autologin file removed after ${i}s"

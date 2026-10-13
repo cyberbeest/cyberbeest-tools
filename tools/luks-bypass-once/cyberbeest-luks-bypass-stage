@@ -1,0 +1,32 @@
+#!/bin/sh
+# Installed as /usr/local/sbin/cyberbeest-luks-bypass-stage. Run as ExecStop of
+# cyberbeest-luks-bypass-stage.service during shutdown, while /boot is still
+# mounted. Copies the pending one-shot key onto /boot -- but only if this
+# shutdown is a reboot/kexec, never for poweroff/halt, so a powered-off disk
+# never holds a usable key.
+PENDING=/etc/cyberbeest-bypass.pending
+AUTOLOGIN=/etc/lightdm/lightdm.conf.d/99-cyberbeest-bypass-autologin.conf
+# A leftover autologin file would mean permanent autologin: never keep one
+# past a shutdown, whatever happens below.
+rm -f "$AUTOLOGIN"
+[ -f "$PENDING" ] || exit 0
+if ! systemctl list-jobs --no-legend 2>/dev/null | grep -qE 'reboot\.target|kexec\.target'; then
+	echo "not a reboot; leaving the key in the encrypted root"
+	exit 0
+fi
+mountpoint -q /boot || { echo "/boot not mounted; not staging" >&2; exit 0; }
+key="$(sed -n 1p "$PENDING")"
+minutes="$(sed -n 2p "$PENDING")"
+case "$minutes" in '' | *[!0-9]*) minutes=10 ;; esac
+[ -n "$key" ] || exit 0
+umask 077
+printf '%s' "$key" > /boot/cyberbeest-bypass.key
+echo $(( $(date +%s) + minutes * 60 )) > /boot/cyberbeest-bypass.until
+autologin_user="$(sed -n 3p "$PENDING")"
+if [ -n "$autologin_user" ] && id "$autologin_user" >/dev/null 2>&1; then
+	printf '[Seat:*]\nautologin-user=%s\nautologin-user-timeout=0\n' "$autologin_user" > "$AUTOLOGIN"
+	echo "staged one-shot LightDM autologin for $autologin_user"
+fi
+rm -f "$PENDING"
+sync
+echo "staged one-shot bypass key on /boot (valid $minutes min)"

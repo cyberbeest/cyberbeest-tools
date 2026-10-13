@@ -1,0 +1,12 @@
+[Unit]
+Description=Remove one-shot LightDM autologin file once the session is up
+ConditionPathExists=/etc/lightdm/lightdm.conf.d/99-cyberbeest-bypass-autologin.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/cyberbeest-luks-bypass-autologin-cleanup
+TimeoutStopSec=5
+ExecStopPost=/bin/rm -f /etc/lightdm/lightdm.conf.d/99-cyberbeest-bypass-autologin.conf
+
+[Install]
+WantedBy=multi-user.target

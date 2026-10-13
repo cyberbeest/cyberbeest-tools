@@ -1,0 +1,114 @@
+#!/bin/sh
+# Installed as /lib/cryptsetup/cyberbeest-askpass-boot-fresh, referenced by
+# /etc/crypttab's keyscript= option (see enable-boot-fresh.sh) in place of
+# the default /lib/cryptsetup/askpass. Called exactly like askpass itself
+# (run_keyscript in /lib/cryptsetup/functions execs it with the prompt
+# text as $1, on the left side of a pipe into cryptsetup) -- so this must
+# behave as a transparent passthrough, differing only in the things
+# below.
+#
+# 1. Before showing the prompt, tells the Plymouth theme whether a
+#    hibernation image is pending (checking /boot -- the one filesystem
+#    readable before LUKS unlock), so it can conditionally show the
+#    "Boot Fresh" button. See cyberbeest-boot-fresh-marker.hook for how
+#    the marker gets written/cleared around hibernate itself.
+#
+# 2. After the password is typed, checks whether Ctrl+F -- a raw 0x06
+#    byte -- appears anywhere in it. Plymouth's own keyboard handling
+#    (ply-keyboard.c: process_keyboard_input's default case) appends
+#    EVERY unmatched key to the password buffer before also forwarding
+#    it to the theme script's keyboard callback -- there's no way to
+#    make Plymouth swallow the keystroke instead, so a Ctrl+F pressed
+#    while typing ends up embedded in the raw password text. If found:
+#    strip it out (so the real passphrase still unlocks LUKS correctly
+#    even though the user's keypress landed inside their typing), and
+#    record the "skip resume" choice as a marker in the initramfs's own
+#    tmpfs for scripts/local-premount/resume (the override installed by
+#    enable-boot-fresh.sh) to honor -- LUKS unlock happens before that
+#    script ever runs, so this is the only way to hand the decision
+#    forward.
+#
+# POSIX sh, no bashisms: dash is /bin/sh in the initramfs.
+set -eu
+
+DEBUG_LOG=/boot/cyberbeest-boot-fresh-debug.log
+log() { echo "$(date '+%H:%M:%S') $1" >> "$DEBUG_LOG" 2>/dev/null || true; }
+
+# $1 here is NOT always a friendly prompt: run_keyscript() in
+# /lib/cryptsetup/functions only substitutes its "Enter master password
+# to decrypt hard drive: " text in the no-keyscript-configured branch --
+# since crypttab has keyscript= pointing at this script, it instead
+# passes through $CRYPTTAB_KEY verbatim, which is crypttab's literal key
+# field ("none" for us). Confirmed by reading run_keyscript() directly
+# after a live boot showed "none" as the prompt text. Substitute our own
+# friendly text instead of forwarding that.
+PROMPT="$1"
+if [ "$PROMPT" = "none" ] || [ -z "$PROMPT" ]; then
+	PROMPT="Enter master password to decrypt hard drive: "
+fi
+
+# 0. One-shot bypass (luks-bypass-once). If /boot holds a bypass key, consume
+#    it unconditionally: move it into /run (tmpfs, survives into the real
+#    root so the cleanup service can remove the temporary LUKS key slot),
+#    delete it from /boot, sync, and only THEN decide whether to use it. If
+#    it is still fresh, print it as the passphrase and skip the prompt. Any
+#    failure or an expired key falls through to the normal prompt.
+BYPASS_KEY=/boot/cyberbeest-bypass.key
+BYPASS_UNTIL=/boot/cyberbeest-bypass.until
+if [ -f "$BYPASS_KEY" ]; then
+	bypass_key="$(cat "$BYPASS_KEY" 2>/dev/null || true)"
+	bypass_until="$(cat "$BYPASS_UNTIL" 2>/dev/null || true)"
+	rm -f "$BYPASS_KEY" "$BYPASS_UNTIL"
+	sync
+	case "$bypass_until" in '' | *[!0-9]*) bypass_until=0 ;; esac
+	if [ -n "$bypass_key" ]; then
+		(umask 077; printf '%s' "$bypass_key" > /run/cyberbeest-bypass.key) 2>/dev/null || true
+		bypass_now="$(date +%s)"
+		if [ "$bypass_until" -gt "$bypass_now" ]; then
+			echo "$(date '+%H:%M:%S') one-shot bypass used" >> "$DEBUG_LOG" 2>/dev/null || true
+			printf '%s' "$bypass_key"
+			exit 0
+		fi
+		echo "$(date '+%H:%M:%S') one-shot bypass expired, prompting" >> "$DEBUG_LOG" 2>/dev/null || true
+	fi
+fi
+
+log "start: raw arg='$1', marker_exists=$([ -e /boot/cyberbeest-hibernated ] && echo yes || echo no)"
+
+if [ -e /boot/cyberbeest-hibernated ]; then
+	if plymouth update --status=cyberbeest-hibernated 2>>"$DEBUG_LOG"; then
+		log "plymouth update: sent OK"
+	else
+		log "plymouth update: FAILED (exit $?)"
+	fi
+fi
+
+raw="$(/lib/cryptsetup/askpass "$PROMPT")"
+log "askpass returned, length=${#raw}"
+
+# 0x06 = Ctrl+F. No \x06-style escape in POSIX sh (same constraint as the
+# .script tokenizer -- see cyberbeest.script), so built the same way: a
+# real embedded byte via printf, not an escape sequence.
+ctrl_f="$(printf '\6')"
+
+case "$raw" in
+*"$ctrl_f"*)
+	log "Ctrl+F detected -- stripping and setting noresume"
+	rm -f /boot/cyberbeest-hibernated
+	touch /run/cyberbeest-noresume
+	raw="$(printf '%s' "$raw" | tr -d "$ctrl_f")"
+	;;
+esac
+
+# 3. Normalize the typed words (lower case, any separator -> "-", umlauts)
+#    when word passphrase entry is installed (enable-passphrase-words.sh puts
+#    the shared filter into the initramfs). Without it, pass the text through
+#    untouched, as before. crypttab holds one keyscript, so this wrapper
+#    carries the filter for machines that have both features.
+FILTER=/lib/cryptsetup/cyberbeest-passphrase-filter
+if [ -r "$FILTER" ]; then
+	. "$FILTER"
+	printf '%s' "$raw" | cyberbeest_normalize_passphrase
+else
+	printf '%s' "$raw"
+fi
