@@ -53,7 +53,7 @@ ask_passphrase() {
 	if [ "$USE_STDIN" -eq 1 ]; then
 		IFS= read -r p
 	else
-		IFS= read -rsp "Master password (needed to add/remove the temporary key): " p </dev/tty
+		IFS= read -rsp "Master password: " p </dev/tty
 		echo >&2
 	fi
 	if [ -r /lib/cryptsetup/cyberbeest-passphrase-filter ]; then
