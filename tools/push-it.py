@@ -293,14 +293,16 @@ def gopanel_pending(repo, files):
             return None
     src = read(GOPANEL_DIR + "/main.go", r'^const version = "([^"]+)"')
     pin = read("69-cyberbeest-panel.sh", r'^GOPANEL_VERSION="([^"]+)"')
-    diff = git(repo, "diff", "--name-only", "@{u}", "--", GOPANEL_DIR).stdout.split()
+    # everything under gopanel changed since the commit that last touched the pins
+    pin_commit = git(repo, "log", "-1", "--format=%H", "--", "69-cyberbeest-panel.sh").stdout.strip()
+    diff = git(repo, "diff", "--name-only", pin_commit or "@{u}", "--", GOPANEL_DIR).stdout.split()
     touched = {p for p in diff + [p for _, p in files] if p.startswith(GOPANEL_DIR + "/")
                and not p.endswith(("_test.go", ".md"))}
     if src and pin and src != pin:
         return f"gopanel source is {src} but the pinned release is {pin}."
     if touched:
         return (f"gopanel sources changed ({len(touched)} file{'s' if len(touched) != 1 else ''}) "
-                f"since the last push; the pinned release {pin} may not contain them.")
+                f"since the release was last pinned; release {pin} does not contain them.")
     return None
 
 
