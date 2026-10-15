@@ -20,8 +20,9 @@ import sys
 import threading
 
 import gi
+gi.require_version("Gdk", "3.0")
 gi.require_version("Gtk", "3.0")
-from gi.repository import Gtk, GLib, Pango
+from gi.repository import Gdk, Gtk, GLib, Pango
 
 sys.dont_write_bytecode = True
 HOME = os.path.expanduser("~")
@@ -402,7 +403,10 @@ class RepoBox(Gtk.Frame):
 
 class App(Gtk.Window):
     def __init__(self):
-        super().__init__(title="Push it", default_width=780, default_height=760)
+        super().__init__(title="Push it")
+        mon = Gdk.Display.get_default().get_primary_monitor() or Gdk.Display.get_default().get_monitor(0)
+        area = mon.get_workarea()  # excludes the panel
+        self.set_default_size(min(780, area.width - 40), min(760, area.height - 80))
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
         self.add(outer)
         sw = Gtk.ScrolledWindow(vexpand=True)
@@ -428,6 +432,7 @@ class App(Gtk.Window):
         self.btn.connect("clicked", self.on_push)
         row.pack_start(self.btn, True, True, 0)
         self.boxes = []
+        self.busy = False
         self.scan()
 
     def scan(self, keep_status=False):
@@ -448,19 +453,30 @@ class App(Gtk.Window):
         self.refresh_buttons()
 
     def refresh_buttons(self):
+        if self.busy:
+            return
         n = sum(1 for b in self.boxes if b.ready())
         self.btn.set_sensitive(n > 0)
         self.btn.set_label(f"PUSH IT  ({n} repo{'s' if n != 1 else ''})" if n else "Nothing to push")
 
     def on_push(self, *_):
         ready = [b for b in self.boxes if b.ready()]
+        self.busy = True
         self.btn.set_sensitive(False)
-        lines = []
-        for b in ready:
-            try:
-                lines.append(b.push())
-            except Exception as e:  # noqa: BLE001
-                lines.append(f"{b.name}: FAILED: {e}")
+        self.btn.set_label("Pushing…")
+
+        def work():
+            lines = []
+            for b in ready:
+                try:
+                    lines.append(b.push())
+                except Exception as e:  # noqa: BLE001
+                    lines.append(f"{b.name}: FAILED: {e}")
+            GLib.idle_add(self.done, lines)
+        threading.Thread(target=work, daemon=True).start()
+
+    def done(self, lines):
+        self.busy = False
         self.scan(keep_status=True)
         self.status.set_text("  |  ".join(lines))
 
