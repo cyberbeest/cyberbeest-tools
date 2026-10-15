@@ -277,6 +277,45 @@ def _draft_llm(prompt):
         raise RuntimeError((r.stderr or r.stdout).strip()[:300] or "empty reply") from None
 
 
+# ---- gopanel release ---------------------------------------------------------------------------
+
+GOPANEL_DIR = "experimental/gopanel"
+
+
+def gopanel_pending(repo, files):
+    """(message, ) when gopanel sources are going out without a matching published release."""
+    def read(path, pat):
+        try:
+            with open(os.path.join(repo, path)) as f:
+                m = re.search(pat, f.read(), re.M)
+            return m.group(1) if m else None
+        except OSError:
+            return None
+    src = read(GOPANEL_DIR + "/main.go", r'^const version = "([^"]+)"')
+    pin = read("69-cyberbeest-panel.sh", r'^GOPANEL_VERSION="([^"]+)"')
+    diff = git(repo, "diff", "--name-only", "@{u}", "--", GOPANEL_DIR).stdout.split()
+    touched = {p for p in diff + [p for _, p in files] if p.startswith(GOPANEL_DIR + "/")
+               and not p.endswith(("_test.go", ".md"))}
+    if src and pin and src != pin:
+        return f"gopanel source is {src} but the pinned release is {pin}."
+    if touched:
+        return (f"gopanel sources changed ({len(touched)} file{'s' if len(touched) != 1 else ''}) "
+                f"since the last push; the pinned release {pin} may not contain them.")
+    return None
+
+
+def gopanel_release_missing(repo):
+    """True if the pinned tarball is not on the server (checked over the network)."""
+    try:
+        with open(os.path.join(repo, "69-cyberbeest-panel.sh")) as f:
+            sha = re.search(r'^GOPANEL_SHA256="([0-9a-f]{64})"', f.read(), re.M).group(1)
+        r = subprocess.run(["curl", "-fsI", "-m", "8", "-o", "/dev/null",
+                            f"https://cyberbeest.com/gopanel/gopanel-{sha[:12]}.tar.gz"])
+        return r.returncode in (22, 404)  # HTTP error; network trouble is not "missing"
+    except (OSError, AttributeError):
+        return False
+
+
 # ---- GUI -------------------------------------------------------------------------------------
 
 class Group(Gtk.Box):
@@ -372,6 +411,8 @@ class RepoBox(Gtk.Frame):
             warn.set_markup(f"<span foreground='red'>On branch {self.branch}, not main: "
                             "Push is disabled here.</span>")
             self.box.pack_start(warn, False, False, 0)
+        if self.name == "provisioning":
+            self.add_gopanel_banner(files)
         for label, sid, gfiles, notes in group_files(self.repo, self.name, files):
             g = Group(self, label, sid, gfiles, notes)
             self.box.pack_start(g, False, False, 0)
@@ -382,6 +423,50 @@ class RepoBox(Gtk.Frame):
                             label="Unpushed commits:\n" + "\n".join("  • " + s for s in self.ahead))
             self.box.pack_start(lab, False, False, 0)
         self.box.show_all()
+
+    def add_gopanel_banner(self, files):
+        row = Gtk.Box(spacing=8)
+        self.gp_label = Gtk.Label(xalign=0, wrap=True, use_markup=True)
+        self.gp_btn = Gtk.Button(label="Publish gopanel release")
+        self.gp_btn.connect("clicked", self.on_gopanel_publish)
+        row.pack_start(self.gp_label, True, True, 0)
+        row.pack_start(self.gp_btn, False, False, 0)
+        self.box.pack_start(row, False, False, 0)
+        self.gp_row = row
+        msg = gopanel_pending(self.repo, files)
+        row.set_no_show_all(True)
+        if msg:
+            self.show_gopanel(msg)
+        else:
+            def work():  # in sync on paper: confirm the pinned file is actually on the server
+                if gopanel_release_missing(self.repo):
+                    GLib.idle_add(self.show_gopanel, "the pinned gopanel release is not on the server.")
+            threading.Thread(target=work, daemon=True).start()
+
+    def show_gopanel(self, msg):
+        self.gp_label.set_markup("<span foreground='#b36b00'><b>gopanel:</b> "
+                                 + GLib.markup_escape_text(msg) + "</span>")
+        self.gp_row.set_no_show_all(False)
+        self.gp_row.show_all()
+
+    def on_gopanel_publish(self, *_):
+        self.gp_btn.set_sensitive(False)
+        self.gp_btn.set_label("Publishing…")
+        self.app.busy = True
+        self.app.btn.set_sensitive(False)
+
+        def work():
+            r = subprocess.run([os.path.join(self.repo, GOPANEL_DIR, "release.sh"), "--publish"],
+                               capture_output=True, text=True, timeout=900)
+            tail = (r.stdout + r.stderr).strip().splitlines()[-1:] or [""]
+            GLib.idle_add(self.gopanel_done, r.returncode == 0, tail[0])
+        threading.Thread(target=work, daemon=True).start()
+
+    def gopanel_done(self, ok, tail):
+        self.app.busy = False
+        self.app.scan(keep_status=True)
+        self.app.status.set_text("gopanel release published; the pin changes are in the list below"
+                                 if ok else f"gopanel release FAILED: {tail}")
 
     def ready(self):
         if not getattr(self, "active", False) or self.branch != "main":
