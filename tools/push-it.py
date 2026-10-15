@@ -404,6 +404,8 @@ class RepoBox(Gtk.Frame):
                         f"{len(self.ahead)} unpushed</small>")
         self.box.pack_start(head, False, False, 0)
         self.active = bool(files or self.ahead)
+        if self.name == "provisioning":  # relevant even when the repo is clean and in sync
+            self.add_gopanel_banner(files)
         if not self.active:
             self.box.pack_start(Gtk.Label(label="Clean and in sync.", xalign=0), False, False, 0)
             self.box.show_all()
@@ -413,8 +415,6 @@ class RepoBox(Gtk.Frame):
             warn.set_markup(f"<span foreground='red'>On branch {self.branch}, not main: "
                             "Push is disabled here.</span>")
             self.box.pack_start(warn, False, False, 0)
-        if self.name == "provisioning":
-            self.add_gopanel_banner(files)
         for label, sid, gfiles, notes in group_files(self.repo, self.name, files):
             g = Group(self, label, sid, gfiles, notes)
             self.box.pack_start(g, False, False, 0)
