@@ -17,8 +17,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 run() { echo "############ $* ############"; bash "$DIR/$@"; }
 
 run 01-base-install.sh
-run 02-provision.sh en
+run 02-provision.sh en-vm
 run 03-vm-image.sh
+run 02-provision.sh en
 run 04-remaster.sh en
 run 05-combine.sh en
 run 02-provision.sh de

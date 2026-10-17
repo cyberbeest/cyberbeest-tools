@@ -3,9 +3,8 @@
 # provisioning/experimental/remaster-live-stick.sh *inside* it (it must run
 # on the machine being snapshotted, per its own header), then pull the
 # resulting live ISO back out to output/. Deletes the provisioned.qcow2
-# afterward -- this is its last consumer for the de branch, and (since
-# 03-vm-image.sh already ran first for en) its last consumer for the en
-# branch too. Keeps disk usage on the 59GB workspace partition to roughly
+# afterward -- its last consumer (the stick builds have their own provisioned
+# disks, separate from the VM image's, see 02-provision.sh). Keeps disk usage on the 59GB workspace partition to roughly
 # "one provisioned VM disk + outputs" at a time instead of all of them at
 # once.
 #
@@ -23,9 +22,6 @@ rb_skip_if_done "$STAGE"
 rb_log "$STAGE"
 
 rb_done "$LOCALE_CODE-provision" || { echo "$LOCALE_CODE-provision hasn't completed yet." >&2; exit 1; }
-if [ "$LOCALE_CODE" = "en" ]; then
-	rb_done vm-image || { echo "vm-image hasn't completed yet -- it needs en/provisioned.qcow2 before this stage deletes it." >&2; exit 1; }
-fi
 
 VM_NAME="cyberbeest-build-$LOCALE_CODE"
 PROVISIONED_QCOW2="$WORKDIR/$LOCALE_CODE/provisioned.qcow2"
@@ -58,6 +54,7 @@ virt-install \
 	--disk "path=$PROVISIONED_QCOW2,format=qcow2,bus=virtio,discard=unmap" \
 	--network network=default,model=virtio \
 	--os-variant debian12 \
+	--boot uefi \
 	--import \
 	--graphics spice,listen=127.0.0.1 \
 	--video qxl \
@@ -91,10 +88,30 @@ echo "--- Running it via guest-agent as root (this takes a while -- squashfs + I
 # set (it checks this is being run via `sudo`, not a raw root shell, so it
 # knows which real user to chown the output ISO to); we're not actually
 # going through sudo here, so just set the var it's really checking for.
-GA_EXEC_CMD="env SUDO_USER=$BUILD_USER http_proxy=$APT_PROXY https_proxy=$APT_PROXY bash /home/$BUILD_USER/remaster-live-stick.sh"
-if ! rb_ga_exec "$VM_NAME" "$GA_EXEC_CMD" 3600; then
-	echo "FAILED: remaster-live-stick.sh via guest-agent -- leaving $VM_NAME running for inspection." >&2
-	exit 1
+# Output goes to a log file in the guest, the exit code to a marker file: the agent
+# reply (a whole live-build log) can exceed virsh's 10MB response cap, which made a
+# successful remaster look like a failure (2026-10-17). The marker also lets a
+# re-run after a pipeline crash skip a remaster that already finished in the guest.
+RC_FILE="/home/$BUILD_USER/remaster.rc"
+GA_EXEC_CMD="env SUDO_USER=$BUILD_USER http_proxy=$APT_PROXY https_proxy=$APT_PROXY bash /home/$BUILD_USER/remaster-live-stick.sh >/home/$BUILD_USER/remaster.log 2>&1; echo \$? >$RC_FILE"
+FINISHED_TEST="grep -q ': done ===' /home/$BUILD_USER/remaster.log && test -s /home/$BUILD_USER/cyberbeest-live-remastered-amd64.iso"
+if [ "$(rb_ga_exec "$VM_NAME" "cat $RC_FILE 2>/dev/null || true" 60 2>/dev/null | tr -d '[:space:]')" = "0" ] || rb_ga_exec "$VM_NAME" "$FINISHED_TEST" 60 >/dev/null 2>&1; then
+	echo "--- Remaster already finished in this guest (remaster.rc = 0, or its log and ISO show it completed) -- skipping it ---"
+else
+	rb_ga_exec "$VM_NAME" "rm -f $RC_FILE" 60 >/dev/null
+	rb_ga_exec "$VM_NAME" "$GA_EXEC_CMD" 3600 >/dev/null || true
+	RC="$(rb_ga_exec "$VM_NAME" "cat $RC_FILE 2>/dev/null || echo missing" 60 | tr -d '[:space:]')"
+	# remaster-live-stick.sh used to exit non-zero after finishing (its EXIT-trap umount
+	# failing under set -e), so a finished ISO plus its "done" line counts as success.
+	if [ "$RC" != "0" ] && rb_ga_exec "$VM_NAME" "$FINISHED_TEST" 60 >/dev/null 2>&1; then
+		echo "--- remaster-live-stick.sh exited rc=$RC but its log shows it finished and the ISO exists -- continuing ---"
+		RC=0
+	fi
+	if [ "$RC" != "0" ]; then
+		echo "FAILED: remaster-live-stick.sh via guest-agent (rc=$RC) -- leaving $VM_NAME running for inspection. Log tail:" >&2
+		rb_ga_exec "$VM_NAME" "tail -n 40 /home/$BUILD_USER/remaster.log" 60 >&2 || true
+		exit 1
+	fi
 fi
 
 echo "--- Reinstalling openssh-server (guest-agent) purely to pull the finished ISO out -- timing-safe, see comment above ---"
