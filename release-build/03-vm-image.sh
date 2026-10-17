@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage 3: convert en/provisioned.qcow2 (already fully provisioned, VM
+# Stage 3: convert en-vm/provisioned.qcow2 (already fully provisioned, VM
 # powered off by 02-provision.sh) into the shared, standalone distributed VM
 # disk image -- output/cyberbeest-vm.qcow2. Purely offline (qemu-img on the
 # file, no VM boot), same compact/convert idiom
@@ -18,9 +18,9 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 rb_skip_if_done vm-image
 rb_log vm-image
 
-rb_done en-provision || { echo "en-provision hasn't completed yet." >&2; exit 1; }
+rb_done en-vm-provision || { echo "en-vm-provision hasn't completed yet." >&2; exit 1; }
 
-SRC="$WORKDIR/en/provisioned.qcow2"
+SRC="$WORKDIR/en-vm/provisioned.qcow2"
 OUT="$OUT_DIR/cyberbeest-vm.qcow2"
 
 TMP="$OUT.precleanup.tmp"
@@ -150,6 +150,10 @@ rm -f "$OUT"
 qemu-img convert -p -O qcow2 -c "$TMP" "$OUT"
 rm -f "$TMP"
 qemu-img info "$OUT"
+
+# Last consumer of the VM-profile disk (the sticks have their own): free its ~30GB.
+virsh undefine "cyberbeest-build-en-vm" --nvram >/dev/null 2>&1 || true
+rm -f "$SRC"
 
 rb_mark_done vm-image
 echo "=== $(date) : vm-image done: $OUT ==="

@@ -10,27 +10,41 @@
 # non-interactive. Running each script directly, in the same numeric order
 # run-gui.py itself would, gets the identical result without that click.
 #
-# Usage: bash 02-provision.sh en|de
+# Two kinds of build come out of this script, because a VM image and a live stick are
+# different products (provisioning behaves differently inside a VM than on real hardware):
+#   en-vm    the VM image's source: provisioned as a guest, no override, so the
+#            VM-aware scripts (no welcome-screen autostart, no nested sandbox VM) act
+#            as they would inside a VM. Consumed by 03-vm-image.sh.
+#   en | de  a live stick's source: PROVISIONING_FORCE_VM_IMAGE_IN_VM=1, so those
+#            scripts behave as on real hardware even though the build guest is a VM.
+#            Consumed by 04-remaster.sh.
+#
+# Usage: bash 02-provision.sh en|de|en-vm
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=lib/common.sh
 . "$DIR/lib/common.sh"
 
-LOCALE_CODE="${1:?Usage: $0 en|de}"
+ARG="${1:?Usage: $0 en|de|en-vm}"
+case "$ARG" in
+	en-vm) LOCALE_CODE=en; KIND=vm; TAG=en-vm ;;
+	en|de) LOCALE_CODE="$ARG"; KIND=stick; TAG="$ARG" ;;
+	*) echo "Unknown build: $ARG (expected en, de or en-vm)" >&2; exit 1 ;;
+esac
 case "$LOCALE_CODE" in
 	en) COUNTRY=US; LANG_CHOICE=en; LOCALE=en_US.UTF-8; KEYBOARD=us; TIMEZONE=UTC ;;
 	de) COUNTRY=DE; LANG_CHOICE=de; LOCALE=de_DE.UTF-8; KEYBOARD=de; TIMEZONE=Europe/Berlin ;;
 	*) echo "Unknown locale code: $LOCALE_CODE (expected en or de)" >&2; exit 1 ;;
 esac
 
-STAGE="$LOCALE_CODE-provision"
+STAGE="$TAG-provision"
 rb_skip_if_done "$STAGE"
 rb_log "$STAGE"
 
 rb_done base-install || { echo "base-install hasn't completed yet -- run 01-base-install.sh first." >&2; exit 1; }
 
-VM_NAME="cyberbeest-build-$LOCALE_CODE"
-LOCALE_DIR="$WORKDIR/$LOCALE_CODE"
+VM_NAME="cyberbeest-build-$TAG"
+LOCALE_DIR="$WORKDIR/$TAG"
 PROVISIONED_QCOW2="$LOCALE_DIR/provisioned.qcow2"
 RAM_MB=4096
 VCPUS=4
@@ -107,6 +121,19 @@ rb_ssh "$IP" "cat > ~/provisioning/.provisioning-profile.env" <<-EOF
 	PROVISIONING_VM_IMAGE=no
 EOF
 
+# A stick is for real hardware: the VM-aware scripts must not mistake the build guest for
+# the product's environment (see 56-cyberbeest-sandbox-vm-kvm.sh, 72-welcome-screen.sh).
+EXTRA_ENV=""
+[ "$KIND" = stick ] && EXTRA_ENV="PROVISIONING_FORCE_VM_IMAGE_IN_VM=1"
+
+# The VM image is the Cyberbeest sandbox VM's base (published as the donor image), so
+# stamp the sandbox-VM marker before the scripts run: 91-sandbox-vm.sh then installs the
+# VM session settings (auto-lock off, no KITT scanner, ...) and sandbox-vm-system.sh the
+# root-side ones. Without it the image carries laptop-only panel items.
+if [ "$KIND" = vm ]; then
+	rb_ssh "$IP" "sudo touch /etc/cyberbeest-sandbox-vm"
+fi
+
 echo "--- Running every NN-*.sh in order ---"
 # LC_ALL=C for correct 00 < 00a < 01 < ... < 13 < 13a < 14 ordering (see
 # cyberbeest_provisioning_nn_letter_suffix_scheme memory).
@@ -117,8 +144,8 @@ if [ -z "$SCRIPTS" ]; then
 fi
 while IFS= read -r script; do
 	[ -z "$script" ] && continue
-	echo "--- [$LOCALE_CODE] Running $script ---"
-	if ! rb_ssh "$IP" "sudo env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=$DBUS_ADDR http_proxy=$APT_PROXY https_proxy=$APT_PROXY bash ~/provisioning/$script"; then
+	echo "--- [$TAG] Running $script ---"
+	if ! rb_ssh "$IP" "sudo env DISPLAY=:0 DBUS_SESSION_BUS_ADDRESS=$DBUS_ADDR $EXTRA_ENV http_proxy=$APT_PROXY https_proxy=$APT_PROXY bash ~/provisioning/$script"; then
 		echo "FAILED: $script -- leaving $VM_NAME running for inspection (ssh -i $SSH_KEY $BUILD_USER@$IP)." >&2
 		exit 1
 	fi

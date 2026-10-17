@@ -7,7 +7,8 @@ Changed files are grouped by the Claude Code session that edited them: the sessi
 those go to the drafting model as context. The drafting runs `claude -p` with ~/claude as working
 directory, so the project memory is available to it too.
 Only the files you leave ticked are committed (by name); other sessions' work stays untouched.
-Never pushes anything but main.
+The second tab fast-forwards the stable branch to origin/main (never forced, never anything else).
+Never pushes anything but main, except for that explicit stable button.
 """
 import datetime
 import glob
@@ -401,14 +402,68 @@ class RepoBox(Gtk.Frame):
         return f"{self.name}: pushed ({n} commit{'s' if n != 1 else ''})"
 
 
+def has_stable(repo):
+    return git(repo, "rev-parse", "--verify", "--quiet", "refs/remotes/origin/stable").returncode == 0
+
+
+class StableBox(Gtk.Frame):
+    """One repo's pending promotion: commits on origin/main that origin/stable lacks."""
+
+    def __init__(self, name):
+        super().__init__()
+        self.name = name
+        self.repo = os.path.join(ROOT, name)
+        self.set_shadow_type(Gtk.ShadowType.ETCHED_IN)
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, margin=10)
+        self.add(box)
+        r = git(self.repo, "log", "--format=%h  %s", "origin/stable..origin/main")
+        self.commits = [l for l in r.stdout.splitlines() if l]
+        # stable must be an ancestor of main, otherwise the push would not be a fast-forward
+        self.diverged = git(self.repo, "merge-base", "--is-ancestor",
+                            "origin/stable", "origin/main").returncode != 0
+        head = Gtk.Label(xalign=0, use_markup=True)
+        head.set_markup(f"<b><big>{GLib.markup_escape_text(name)}</big></b>  "
+                        f"<small>{len(self.commits)} commit{'s' if len(self.commits) != 1 else ''} "
+                        "ahead of stable</small>")
+        box.pack_start(head, False, False, 0)
+        if self.diverged:
+            msg = "stable has commits main lacks: promote by hand, not from here."
+        elif not self.commits:
+            msg = "Stable is up to date."
+        else:
+            shown = self.commits[:30]
+            msg = "\n".join("  • " + c for c in shown)
+            if len(self.commits) > len(shown):
+                msg += f"\n  … and {len(self.commits) - len(shown)} more"
+        box.pack_start(Gtk.Label(label=msg, xalign=0, wrap=True, selectable=True), False, False, 0)
+        self.check = Gtk.CheckButton(label="Promote this repo", active=True)
+        self.check.connect("toggled", lambda *_: self.refresh())
+        if self.ready_base():
+            box.pack_start(self.check, False, False, 0)
+
+    def ready_base(self):
+        return bool(self.commits) and not self.diverged
+
+    def ready(self):
+        return self.ready_base() and self.check.get_active()
+
+    def push(self):
+        git(self.repo, "push", "origin", "origin/main:refs/heads/stable", check=True)
+        n = len(self.commits)
+        return f"{self.name}: stable moved forward ({n} commit{'s' if n != 1 else ''})"
+
+
 class App(Gtk.Window):
     def __init__(self):
         super().__init__(title="Push it")
         mon = Gdk.Display.get_default().get_primary_monitor() or Gdk.Display.get_default().get_monitor(0)
         area = mon.get_workarea()  # excludes the panel
         self.set_default_size(min(780, area.width - 40), min(760, area.height - 80))
+        nb = Gtk.Notebook()
+        self.add(nb)
         outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
-        self.add(outer)
+        nb.append_page(outer, Gtk.Label(label="Main"))
+        self.build_stable_tab(nb)
         sw = Gtk.ScrolledWindow(vexpand=True)
         self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         sw.add(self.list)
@@ -435,6 +490,88 @@ class App(Gtk.Window):
         self.boxes = []
         self.busy = False
         self.scan()
+        self.scan_stable()
+
+    def build_stable_tab(self, nb):
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
+        nb.append_page(page, Gtk.Label(label="Stable"))
+        intro = Gtk.Label(xalign=0, wrap=True,
+                          label="Moves stable forward to what is on main (fast-forward only). "
+                                "Do this once the changes have soaked on the beta machines.")
+        page.pack_start(intro, False, False, 0)
+        sw = Gtk.ScrolledWindow(vexpand=True)
+        self.stable_list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        sw.add(self.stable_list)
+        page.pack_start(sw, True, True, 0)
+        self.stable_status = Gtk.Label(xalign=0)
+        page.pack_start(self.stable_status, False, False, 0)
+        row = Gtk.Box(spacing=8)
+        page.pack_start(row, False, False, 0)
+        rescan = Gtk.Button.new_from_icon_name("view-refresh", Gtk.IconSize.LARGE_TOOLBAR)
+        rescan.set_tooltip_text("Rescan")
+        rescan.connect("clicked", lambda *_: self.scan_stable())
+        row.pack_start(rescan, False, False, 0)
+        self.stable_btn = Gtk.Button(label="Nothing to promote", sensitive=False)
+        css = Gtk.CssProvider()
+        css.load_from_data(b"button.promote { background: #b8731a; color: white; }"
+                           b"button.promote:hover { background: #d4881f; }"
+                           b"button.promote:disabled { background: #d3c4ad; color: #f0f0f0; }")
+        self.stable_btn.get_style_context().add_class("promote")
+        self.stable_btn.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self.stable_btn.set_size_request(-1, 56)
+        self.stable_btn.get_child().override_font(Pango.FontDescription("bold 16"))
+        self.stable_btn.connect("clicked", self.on_promote)
+        row.pack_start(self.stable_btn, True, True, 0)
+        self.stable_boxes = []
+
+    def scan_stable(self, keep_status=False):
+        for b in self.stable_boxes:
+            b.destroy()
+        self.stable_boxes = []
+        for name in REPOS:
+            repo = os.path.join(ROOT, name)
+            if not os.path.isdir(os.path.join(repo, ".git")):
+                continue
+            git(repo, "fetch", "--quiet")
+            if not has_stable(repo):
+                continue
+            b = StableBox(name)
+            b.refresh = self.refresh_stable
+            self.stable_list.pack_start(b, False, False, 0)
+            self.stable_boxes.append(b)
+        self.stable_list.show_all()
+        if not keep_status:
+            self.stable_status.set_text("")
+        self.refresh_stable()
+
+    def refresh_stable(self):
+        if self.busy:
+            return
+        n = sum(1 for b in self.stable_boxes if b.ready())
+        self.stable_btn.set_sensitive(n > 0)
+        self.stable_btn.set_label(f"PROMOTE TO STABLE  ({n} repo{'s' if n != 1 else ''})"
+                                  if n else "Nothing to promote")
+
+    def on_promote(self, *_):
+        ready = [b for b in self.stable_boxes if b.ready()]
+        self.busy = True
+        self.stable_btn.set_sensitive(False)
+        self.stable_btn.set_label("Promoting…")
+
+        def work():
+            lines = []
+            for b in ready:
+                try:
+                    lines.append(b.push())
+                except Exception as e:  # noqa: BLE001
+                    lines.append(f"{b.name}: FAILED: {e}")
+            GLib.idle_add(self.promoted, lines)
+        threading.Thread(target=work, daemon=True).start()
+
+    def promoted(self, lines):
+        self.busy = False
+        self.scan_stable(keep_status=True)
+        self.stable_status.set_text("  |  ".join(lines))
 
     def scan(self, keep_status=False):
         for b in self.boxes:
