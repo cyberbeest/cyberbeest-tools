@@ -241,7 +241,7 @@ and why it matters) and "message" (the commit message: short subject line, blank
 Start the subject line with an uppercase tag and a colon when one clearly applies: "FIX:" (bug fix),
 "FEATURE:" (new capability), "CONFIG:" (settings, defaults, packaging, build or deployment
 configuration), "DOCS:" (documentation, manual, website copy), "REFACTOR:" (restructuring
-without behavior change), "I18N:" (translations, localization). If none clearly applies, or it is a mix, use no tag at all rather than guessing.
+without behavior change), "I18N:" (translations, localization), "HARDENING:" (security hardening). If none clearly applies, or it is a mix, use no tag at all rather than guessing.
 Not 100% exact is fine; do not invent details that are not in the data."""
 
 
