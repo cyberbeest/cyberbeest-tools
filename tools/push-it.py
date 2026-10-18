@@ -243,7 +243,9 @@ Start the subject line with an uppercase tag and a colon when one clearly applie
 configuration), "DOCS:" (documentation, manual, website copy), "REFACTOR:" (restructuring
 without behavior change), "I18N:" (translations, localization), "HARDENING:" (security hardening),
 "WEAKENING:" (a deliberate decrease in security), "REMOVAL:" (removing live features, files or
-behavior that machines actually use), "CLEANUP:" (removing unused or archived leftovers). If none clearly applies, or it is a mix, use no tag at all rather than guessing.
+behavior that machines actually use), "CLEANUP:" (removing unused or archived leftovers),
+"OPTIMIZATION:" (faster, lighter or more efficient with the same behavior),
+"DEBUGGING:" (extra logging, diagnostics or temporary instrumentation to track down a problem). If none clearly applies, or it is a mix, use no tag at all rather than guessing.
 Not 100% exact is fine; do not invent details that are not in the data."""
 
 
@@ -477,6 +479,9 @@ class App(Gtk.Window):
         self.list = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         sw.add(self.list)
         outer.pack_start(sw, True, True, 0)
+        self.summary = Gtk.Label(xalign=0, yalign=0, wrap=True, selectable=True)
+        self.summary.override_font(Pango.FontDescription("monospace 9"))
+        outer.pack_start(self.summary, False, False, 0)
         self.status = Gtk.Label(xalign=0)
         outer.pack_start(self.status, False, False, 0)
         row = Gtk.Box(spacing=8)
@@ -599,9 +604,23 @@ class App(Gtk.Window):
             self.status.set_text("")
         self.refresh_buttons()
 
+    def update_summary(self):
+        """Subject lines of the commits PUSH IT would make, grouped by repo."""
+        lines = []
+        for b in self.boxes:
+            if not b.ready():
+                continue
+            subjects = [g.message().splitlines()[0] for g in b.groups if g.ready()]
+            lines.append(b.name + ":")
+            lines += ["  " + t for t in subjects]
+            if b.ahead:
+                lines += [f"  (already committed) {t}" for t in b.ahead]
+        self.summary.set_text("\n".join(lines))
+
     def refresh_buttons(self):
         if self.busy:
             return
+        self.update_summary()
         n = sum(1 for b in self.boxes if b.ready())
         self.btn.set_sensitive(n > 0)
         self.btn.set_label(f"PUSH IT  ({n} repo{'s' if n != 1 else ''})" if n else "Nothing to push")
