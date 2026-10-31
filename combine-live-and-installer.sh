@@ -5,10 +5,29 @@
 # provisioning/experimental/remaster-live-stick.sh), so one stick can both
 # boot live (try it) and install to disk (buy it / keep it).
 #
-# The live ISO's own boot menu is left as the default -- this only ADDS two
-# entries alongside it, in both isolinux (BIOS) and grub (UEFI) menus. Live
-# boot stays "menu default" / grub default=0; installing is a deliberate
-# extra keypress either way:
+# Boot menu (both isolinux/BIOS and grub/UEFI), top to bottom:
+#
+# - "Scan this computer for malware" -- FIRST and the default, no timeout.
+#   Boots the live image with "cyberbeest-scan" on the kernel command line,
+#   which makes it open the machine's internal disk read-only and scan it
+#   from outside (see provisioning/lib/cyberbeest-stick-scan.sh). It is a
+#   copy of the live image's own boot entry with that one parameter added.
+# - The live image's own entry (try Cyberbeest), then:
+#
+# The same scan entry is also written to /boot/grub/scan.cfg: the installed
+# Cyberbeest's 'USB scan' GRUB entry loads that file straight off the stick
+# (grub-reboot, no NVRAM changes), after cyberbeest-scan-stick-helper.sh has
+# checked /cyberbeest-scan.manifest(.sig) -- sha256 of scan.cfg, grub.cfg,
+# kernel and initrd, signed with SIGN_KEY (see below). The squashfs is NOT in
+# the manifest (hashing it over USB2 takes ~90 s); a later version can embed
+# its hash in the signed initrd and check it at boot.
+#
+# Signing: ssh-keygen -Y sign with the private key at $CYBERBEEST_SCAN_SIGN_KEY
+# (default ~/.config/cyberbeest-scan-signing/id_ed25519; create it with
+# make-scan-signing-key.sh). Without a key the stick is still built, but
+# unsigned, and the installed machines will say so before booting it.
+#
+# The two install entries below stay deliberate extra keypresses:
 #
 # - "Auto Cyberbeest install (ERASES THE DISK)": same preseeded, unattended
 #   install build-iso.sh's netinst stick offers, same ERASES-THE-DISK label,
@@ -126,7 +145,63 @@ echo "Extracting live ISO's boot menu files to patch..."
 xorriso -indev "$LIVE_ISO" \
 	-osirrox on \
 	-extract /isolinux/menu.cfg "$WORK/menu.cfg" \
+	-extract /isolinux/live.cfg "$WORK/live.cfg" \
 	-extract /boot/grub/grub.cfg "$WORK/grub.cfg"
+
+echo "Extracting the live kernel/initrd (for the signed manifest)..."
+mkdir -p "$WORK/live"
+LIVE_LS="$(xorriso -indev "$LIVE_ISO" -ls /live 2>/dev/null | tr -d "'")"
+KERNEL_NAME="$(printf '%s\n' "$LIVE_LS" | grep '^vmlinuz' | head -n1)"
+INITRD_NAME="$(printf '%s\n' "$LIVE_LS" | grep '^initrd' | head -n1)"
+if [ -z "$KERNEL_NAME" ] || [ -z "$INITRD_NAME" ]; then
+	echo "Could not find kernel/initrd under /live in $LIVE_ISO" >&2
+	exit 1
+fi
+xorriso -indev "$LIVE_ISO" -osirrox on \
+	-extract "/live/$KERNEL_NAME" "$WORK/live/$KERNEL_NAME" \
+	-extract "/live/$INITRD_NAME" "$WORK/live/$INITRD_NAME"
+
+echo "Adding the 'Scan this computer for malware' entry (default, first, no timeout)..."
+python3 - "$WORK" <<'PY'
+import re, sys
+work = sys.argv[1]
+
+# ---- isolinux: copy the first live label, add cyberbeest-scan, make it the default
+live = open(f"{work}/live.cfg").read()
+blocks = re.split(r"\n(?=label )", live.strip("\n"))
+first = blocks[0]
+if not first.startswith("label "):
+    sys.exit("isolinux live.cfg: no label block found")
+scan = re.sub(r"^label .*", "label scan", first, count=1, flags=re.M)
+scan = re.sub(r"^\s*menu label .*", "\tmenu label ^Scan this computer for malware", scan, count=1, flags=re.M)
+scan = re.sub(r"^\s*menu default\s*$", "", scan, flags=re.M)
+scan = re.sub(r"^(\s*append .*)$", r"\1 cyberbeest-scan", scan, count=1, flags=re.M)
+if "cyberbeest-scan" not in scan:
+    sys.exit("isolinux live.cfg: no append line to extend")
+scan += "\n\tmenu default"
+rest = [re.sub(r"^\s*menu default\s*$", "", b, flags=re.M) for b in blocks]
+open(f"{work}/live.cfg", "w").write(scan + "\n\n" + "\n".join(rest) + "\n")
+
+# ---- grub: same, as the first menuentry (default=0 stays 0, no timeout is set)
+grub = open(f"{work}/grub.cfg").read()
+m = re.search(r"^menuentry [^\n]*\{\n.*?^\}\n", grub, flags=re.M | re.S)
+if not m:
+    sys.exit("grub.cfg: no menuentry block found")
+entry = m.group(0)
+entry = re.sub(r"^menuentry [^\n]*\{", "menuentry 'Scan this computer for malware' --id cyberbeest-scan {", entry, count=1)
+entry = re.sub(r"^(\s*linux\s+.*)$", r"\1 cyberbeest-scan", entry, count=1, flags=re.M)
+if "cyberbeest-scan" not in entry.split("\n", 1)[1]:
+    sys.exit("grub.cfg: no linux line to extend")
+open(f"{work}/grub.cfg", "w").write(grub[:m.start()] + entry + grub[m.start():])
+# scan.cfg: loaded by the installed machine's GRUB straight from the stick;
+# its paths are relative to $root, which that entry sets to the stick.
+# boot at once: the host GRUB's own timeout/menu settings must not stall it
+open(f"{work}/scan.cfg", "w").write("set default=0\nset timeout=0\n" + entry)
+PY
+if ! grep -q 'cyberbeest-scan' "$WORK/scan.cfg"; then
+	echo "Failed to build scan.cfg" >&2
+	exit 1
+fi
 
 echo "Patching isolinux menu (BIOS boot) -- adding install entries, not touching the live default..."
 cat >"$WORK/installer.cfg" <<-'EOF'
@@ -175,6 +250,30 @@ if [ "$(grep -c "Install Cyberbeest (ERASES THE DISK)" "$WORK/grub.cfg.new")" -n
 fi
 mv "$WORK/grub.cfg.new" "$WORK/grub.cfg"
 
+echo "Writing the signed scan manifest..."
+(
+	cd "$WORK"
+	# Paths as they appear on the stick.
+	mkdir -p manifest-tree/boot/grub manifest-tree/live
+	cp scan.cfg manifest-tree/boot/grub/scan.cfg
+	cp grub.cfg manifest-tree/boot/grub/grub.cfg
+	cp "live/$KERNEL_NAME" "live/$INITRD_NAME" manifest-tree/live/
+	cd manifest-tree
+	sha256sum boot/grub/scan.cfg boot/grub/grub.cfg "live/$KERNEL_NAME" "live/$INITRD_NAME" \
+		| sed 's|  |  /|' > ../cyberbeest-scan.manifest
+)
+SIGN_KEY="${CYBEEST_SCAN_SIGN_KEY:-${CYBERBEEST_SCAN_SIGN_KEY:-$HOME/.config/cyberbeest-scan-signing/id_ed25519}}"
+MAP_SIG=()
+if [ -r "$SIGN_KEY" ]; then
+	rm -f "$WORK/cyberbeest-scan.manifest.sig"
+	ssh-keygen -Y sign -q -f "$SIGN_KEY" -n cyberbeest-scan "$WORK/cyberbeest-scan.manifest"
+	MAP_SIG=(-map "$WORK/cyberbeest-scan.manifest.sig" /cyberbeest-scan.manifest.sig)
+	echo "Manifest signed with $SIGN_KEY"
+else
+	echo "WARNING: no signing key at $SIGN_KEY -- the scan manifest is UNSIGNED." >&2
+	echo "         Create one with make-scan-signing-key.sh before building a release stick." >&2
+fi
+
 echo "Assembling $OUT_ISO..."
 xorriso -indev "$LIVE_ISO" \
 	-outdev "$OUT_ISO" \
@@ -191,6 +290,10 @@ xorriso -indev "$LIVE_ISO" \
 	-map "$WORK/disk-markers/cd_type" /.disk/cd_type \
 	-map "$WORK/disk-markers/udeb_include" /.disk/udeb_include \
 	-map "$WORK/menu.cfg" /isolinux/menu.cfg \
+	-map "$WORK/live.cfg" /isolinux/live.cfg \
+	-map "$WORK/scan.cfg" /boot/grub/scan.cfg \
+	-map "$WORK/cyberbeest-scan.manifest" /cyberbeest-scan.manifest \
+	"${MAP_SIG[@]}" \
 	-map "$WORK/installer.cfg" /isolinux/installer.cfg \
 	-map "$WORK/grub.cfg" /boot/grub/grub.cfg \
 	-boot_image any replay \
