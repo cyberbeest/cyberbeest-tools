@@ -55,7 +55,7 @@ VCPUS=4
 # build reflects what a real user's machine would actually receive right
 # now.
 PROVISIONING_REPO="https://github.com/cyberbeest/provisioning.git"
-PROVISIONING_BRANCH="stable"
+PROVISIONING_BRANCH="${PROVISIONING_BRANCH:-stable}"
 
 rb_ensure_default_network
 rb_ensure_ssh_key
