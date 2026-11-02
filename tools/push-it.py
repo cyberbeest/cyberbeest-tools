@@ -680,6 +680,10 @@ class App(Gtk.Window):
         if self.busy:
             return
         self.update_summary()
+        if self.pending:
+            self.btn.set_sensitive(False)
+            self.btn.set_label("Drafting commit messages…")
+            return
         n = sum(1 for b in self.boxes if b.ready())
         self.btn.set_sensitive(n > 0)
         self.btn.set_label(f"PUSH IT  ({n} repo{'s' if n != 1 else ''})" if n else "Nothing to push")
