@@ -2,7 +2,8 @@
 """Renders the boot-menu background of the Cyberbeest stick (replaces the live image's
 Debian splash): logo, stick name and a short description in the top part, the menu area
 below left empty. combine-live-and-installer.sh swaps the results in for
-/boot/grub/splash.png (800x600) and /isolinux/splash.png (640x480).
+/boot/grub/splash.png (1366x768, the panels' native 16:9; GRUB runs at the screen's own
+mode and pads other shapes) and /isolinux/splash.png (640x480, BIOS boot).
 
     python3 make-stick-splash.py [OUT_DIR]     (default: stick-splash/ next to this script)
 
@@ -34,7 +35,7 @@ TEXT = {
 # size -> (logo px, title px, text px, left margin, top margin); the grub menu starts at
 # 52% of the height, the isolinux menu at about row 12 of 30, so everything fits above that.
 LAYOUT = {
-    (800, 600): (250, 46, 21, 48, 30),
+    (1366, 768): (300, 62, 28, 150, 50),
     (640, 480): (160, 36, 17, 36, 18),
 }
 
@@ -65,7 +66,7 @@ def render(size, lang):
 def main():
     out = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "stick-splash")
     os.makedirs(out, exist_ok=True)
-    for size, kind in (((800, 600), "grub"), ((640, 480), "isolinux")):
+    for size, kind in (((1366, 768), "grub"), ((640, 480), "isolinux")):
         for lang in TEXT:
             path = os.path.join(out, f"splash-{kind}-{lang}.png")
             render(size, lang).save(path, optimize=True)

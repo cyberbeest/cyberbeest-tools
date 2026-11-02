@@ -148,7 +148,9 @@ xorriso -indev "$LIVE_ISO" \
 	-osirrox on \
 	-extract /isolinux/menu.cfg "$WORK/menu.cfg" \
 	-extract /isolinux/live.cfg "$WORK/live.cfg" \
-	-extract /boot/grub/grub.cfg "$WORK/grub.cfg"
+	-extract /boot/grub/grub.cfg "$WORK/grub.cfg" \
+	-extract /boot/grub/config.cfg "$WORK/config.cfg" \
+	-extract /boot/grub/live-theme/theme.txt "$WORK/theme.txt"
 
 echo "Extracting the live kernel/initrd (for the signed manifest)..."
 mkdir -p "$WORK/live"
@@ -164,6 +166,13 @@ xorriso -indev "$LIVE_ISO" -osirrox on \
 	-extract "/live/$INITRD_NAME" "$WORK/live/$INITRD_NAME"
 # the extracted menu files keep the ISO's read-only mode; the patch below rewrites them
 chmod -R u+w "$WORK"
+
+# GRUB menu resolution: the live image fixes it at 800x600 (4:3), which a 16:9 panel
+# stretches. Use the screen's own mode instead, and let the theme pad (keep the aspect of)
+# the background on screens shaped differently from the 16:9 splash.
+sed -i 's/^\(\s*\)set gfxmode=800x600\s*$/\1set gfxmode=auto/' "$WORK/config.cfg"
+! grep -q 'gfxmode=800x600' "$WORK/config.cfg" || { echo "config.cfg: gfxmode=800x600 still there" >&2; exit 1; }
+sed -i '1i desktop-image-scale-method: "padding"' "$WORK/theme.txt"
 
 echo "Adding the 'Scan this computer for malware' entry (default, first, no timeout)..."
 python3 - "$WORK" <<'PY'
@@ -311,6 +320,8 @@ xorriso -indev "$LIVE_ISO" \
 	-map "$WORK/cyberbeest-scan.manifest" /cyberbeest-scan.manifest \
 	"${MAP_SIG[@]}" \
 	"${MAP_SPLASH[@]}" \
+	-map "$WORK/config.cfg" /boot/grub/config.cfg \
+	-map "$WORK/theme.txt" /boot/grub/live-theme/theme.txt \
 	-map "$WORK/installer.cfg" /isolinux/installer.cfg \
 	-map "$WORK/grub.cfg" /boot/grub/grub.cfg \
 	-boot_image any replay \
