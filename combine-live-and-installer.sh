@@ -14,11 +14,13 @@
 #   copy of the live image's own boot entry with that one parameter added.
 # - The live image's own entry (try Cyberbeest), then:
 #
-# The same scan entry is also written to /boot/grub/scan.cfg: the installed
-# Cyberbeest's 'USB scan' GRUB entry loads that file straight off the stick
-# (grub-reboot, no NVRAM changes), after cyberbeest-scan-stick-helper.sh has
-# checked /cyberbeest-scan.manifest(.sig) -- sha256 of scan.cfg, grub.cfg,
-# kernel and initrd, signed with SIGN_KEY (see below). The squashfs is NOT in
+# The installed Cyberbeest's popup (cyberbeest-scan-stick-helper.sh) checks
+# /cyberbeest-scan.manifest(.sig) -- sha256 of scan.cfg, grub.cfg, kernel and
+# initrd, signed with SIGN_KEY (see below) -- and then simply reboots: the
+# firmware's USB-first boot order starts the stick, whose default entry is the
+# scan. (An earlier version loaded the same entry as /boot/grub/scan.cfg from
+# the host's GRUB via grub-reboot; that fails on firmware that doesn't show USB
+# storage to GRUB, so scan.cfg is still written and signed but no longer used.) The squashfs is NOT in
 # the manifest (hashing it over USB2 takes ~90 s); a later version can embed
 # its hash in the signed initrd and check it at boot.
 #
