@@ -71,6 +71,23 @@ def changed_files(repo):
     return files
 
 
+def state_signature(repo):
+    """Cheap fingerprint of what a scan would show (no fetch, no model call): HEAD, the
+    uncommitted diff and the size/mtime of untracked files."""
+    h = hashlib.sha256()
+    h.update(git(repo, "rev-parse", "HEAD").stdout.encode())
+    h.update(git(repo, "diff", "HEAD").stdout.encode())
+    for st, p in changed_files(repo):
+        h.update(f"{st} {p}".encode())
+        if st == "??":
+            try:
+                x = os.stat(os.path.join(repo, p))
+                h.update(f"{x.st_size} {x.st_mtime_ns}".encode())
+            except OSError:
+                pass
+    return h.hexdigest()
+
+
 def unpushed(repo):
     r = git(repo, "log", "--format=%s", "@{u}..HEAD")
     return [l for l in r.stdout.splitlines() if l] if r.returncode == 0 else []
@@ -329,6 +346,8 @@ class Group(Gtk.Box):
         if not paths:
             return
 
+        self.repo_box.app.pending += 1
+
         def work():
             try:
                 s, m = draft(self.repo_box.repo, self.repo_box.name, paths, self.notes)
@@ -338,6 +357,7 @@ class Group(Gtk.Box):
         threading.Thread(target=work, daemon=True).start()
 
     def set_draft(self, s, m):
+        self.repo_box.app.pending -= 1
         self.text = m
         self.label.set_text(m if m else s)
         self.repo_box.app.refresh_buttons()
@@ -503,8 +523,36 @@ class App(Gtk.Window):
         row.pack_start(self.btn, True, True, 0)
         self.boxes = []
         self.busy = False
+        self.pending = 0  # drafts being generated
+        self.sig = None
+        self.checking = False
         self.scan()
         self.scan_stable()
+        self.connect("notify::is-active", self.on_active)
+
+    def signature(self):
+        return [state_signature(os.path.join(ROOT, n)) for n in REPOS
+                if os.path.isdir(os.path.join(ROOT, n, ".git"))]
+
+    def on_active(self, *_):
+        """Rescan when the window is activated, but only if idle and something actually changed
+        (an unchanged state would re-use the cached drafts anyway, but would reset the ticks)."""
+        if not self.is_active() or self.busy or self.pending or self.checking:
+            return
+        self.checking = True
+
+        def work():
+            try:
+                sig = self.signature()
+            except Exception:  # noqa: BLE001
+                sig = None
+            GLib.idle_add(self.activated, sig)
+        threading.Thread(target=work, daemon=True).start()
+
+    def activated(self, sig):
+        self.checking = False
+        if sig is not None and sig != self.sig and not self.busy and not self.pending:
+            self.scan()
 
     def build_stable_tab(self, nb):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -603,6 +651,10 @@ class App(Gtk.Window):
         if not keep_status:
             self.status.set_text("")
         self.refresh_buttons()
+        try:
+            self.sig = self.signature()
+        except Exception:  # noqa: BLE001
+            self.sig = None
 
     def update_summary(self):
         """Subject lines of the commits PUSH IT would make, grouped by repo."""
