@@ -160,6 +160,8 @@ fi
 xorriso -indev "$LIVE_ISO" -osirrox on \
 	-extract "/live/$KERNEL_NAME" "$WORK/live/$KERNEL_NAME" \
 	-extract "/live/$INITRD_NAME" "$WORK/live/$INITRD_NAME"
+# the extracted menu files keep the ISO's read-only mode; the patch below rewrites them
+chmod -R u+w "$WORK"
 
 echo "Adding the 'Scan this computer for malware' entry (default, first, no timeout)..."
 python3 - "$WORK" <<'PY'
@@ -175,7 +177,7 @@ if not first.startswith("label "):
 scan = re.sub(r"^label .*", "label scan", first, count=1, flags=re.M)
 scan = re.sub(r"^\s*menu label .*", "\tmenu label ^Scan this computer for malware", scan, count=1, flags=re.M)
 scan = re.sub(r"^\s*menu default\s*$", "", scan, flags=re.M)
-scan = re.sub(r"^(\s*append .*)$", r"\1 cyberbeest-scan", scan, count=1, flags=re.M)
+scan = re.sub(r"^(\s*append .*)$", r"\1 cyberbeest-scan live-config.username=cyberbeest", scan, count=1, flags=re.M)
 if "cyberbeest-scan" not in scan:
     sys.exit("isolinux live.cfg: no append line to extend")
 scan += "\n\tmenu default"
@@ -189,7 +191,7 @@ if not m:
     sys.exit("grub.cfg: no menuentry block found")
 entry = m.group(0)
 entry = re.sub(r"^menuentry [^\n]*\{", "menuentry 'Scan this computer for malware' --id cyberbeest-scan {", entry, count=1)
-entry = re.sub(r"^(\s*linux\s+.*)$", r"\1 cyberbeest-scan", entry, count=1, flags=re.M)
+entry = re.sub(r"^(\s*linux\s+.*)$", r"\1 cyberbeest-scan live-config.username=cyberbeest", entry, count=1, flags=re.M)
 if "cyberbeest-scan" not in entry.split("\n", 1)[1]:
     sys.exit("grub.cfg: no linux line to extend")
 open(f"{work}/grub.cfg", "w").write(grub[:m.start()] + entry + grub[m.start():])
