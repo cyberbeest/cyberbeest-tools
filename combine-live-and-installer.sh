@@ -278,6 +278,18 @@ else
 	echo "         Create one with make-scan-signing-key.sh before building a release stick." >&2
 fi
 
+# Boot menu background: the Cyberbeest splash (logo, stick name, description) instead of
+# the live image's Debian one, in the language of this build (see make-stick-splash.py).
+SPLASH_DIR="$DIR/stick-splash"
+SPLASH_LANG="${STICK_LOCALE:-en}"
+MAP_SPLASH=()
+if [ -f "$SPLASH_DIR/splash-grub-$SPLASH_LANG.png" ] && [ -f "$SPLASH_DIR/splash-isolinux-$SPLASH_LANG.png" ]; then
+	MAP_SPLASH=(-map "$SPLASH_DIR/splash-grub-$SPLASH_LANG.png" /boot/grub/splash.png
+		-map "$SPLASH_DIR/splash-isolinux-$SPLASH_LANG.png" /isolinux/splash.png)
+else
+	echo "WARNING: no stick splash for '$SPLASH_LANG' in $SPLASH_DIR -- the Debian one stays." >&2
+fi
+
 echo "Assembling $OUT_ISO..."
 xorriso -indev "$LIVE_ISO" \
 	-outdev "$OUT_ISO" \
@@ -298,6 +310,7 @@ xorriso -indev "$LIVE_ISO" \
 	-map "$WORK/scan.cfg" /boot/grub/scan.cfg \
 	-map "$WORK/cyberbeest-scan.manifest" /cyberbeest-scan.manifest \
 	"${MAP_SIG[@]}" \
+	"${MAP_SPLASH[@]}" \
 	-map "$WORK/installer.cfg" /isolinux/installer.cfg \
 	-map "$WORK/grub.cfg" /boot/grub/grub.cfg \
 	-boot_image any replay \

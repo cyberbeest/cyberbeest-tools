@@ -27,7 +27,7 @@ OUT_ISO="$OUT_DIR/cyberbeest-$LOCALE_CODE.iso"
 [ -f "$LIVE_ISO" ] || { echo "Missing $LIVE_ISO" >&2; exit 1; }
 
 echo "--- Combining $LIVE_ISO + installer -> $OUT_ISO ---"
-bash "$COMBINE_SCRIPT" "$LIVE_ISO" "$NETINST_ISO" "$OUT_ISO"
+STICK_LOCALE="$LOCALE_CODE" bash "$COMBINE_SCRIPT" "$LIVE_ISO" "$NETINST_ISO" "$OUT_ISO"
 
 rb_mark_done "$STAGE"
 echo "=== $(date) : $STAGE done: $OUT_ISO ==="
