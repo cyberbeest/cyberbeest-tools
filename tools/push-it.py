@@ -540,6 +540,7 @@ class App(Gtk.Window):
         if not self.is_active() or self.busy or self.pending or self.checking:
             return
         self.checking = True
+        self.btn.set_label("Checking for changes…")
 
         def work():
             try:
@@ -553,6 +554,8 @@ class App(Gtk.Window):
         self.checking = False
         if sig is not None and sig != self.sig and not self.busy and not self.pending:
             self.scan()
+        elif not self.busy:
+            self.refresh_buttons()
 
     def build_stable_tab(self, nb):
         page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8, margin=10)
@@ -636,6 +639,10 @@ class App(Gtk.Window):
         self.stable_status.set_text("  |  ".join(lines))
 
     def scan(self, keep_status=False):
+        self.btn.set_sensitive(False)
+        self.btn.set_label("Scanning…")
+        while Gtk.events_pending():  # paint the label before the blocking fetch
+            Gtk.main_iteration()
         for b in self.boxes:
             b.destroy()
         self.boxes = []
