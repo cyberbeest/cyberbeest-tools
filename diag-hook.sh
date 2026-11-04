@@ -13,7 +13,7 @@
 #    minimal X session (window manager + the scan window) for the autologin user.
 cat > /usr/local/bin/diag <<'COLLECTOR'
 #!/bin/sh
-# diag        page 1, now          diag 2     page 2, now
+# diag        page 1, now          diag 2 / diag 3     page 2 / page 3, now
 # diag auto   wait 80 s, collect both pages, show them on VT 9 / VT 10, switch to VT 9
 [ "$1" = auto ] && sleep 80
 LL=/var/log/lightdm
@@ -32,7 +32,7 @@ page1() {
 	grep -v '^$' /home/cyberbeest/.xsession-errors 2>/dev/null | tail -n 5 | cut -c1-120
 	echo "--- journal warnings (tail)"
 	journalctl -b -p warning --no-pager 2>/dev/null | tail -n 4 | cut -c1-120
-	echo "(page 2: Ctrl+Alt+F10 / 'diag 2'; Ctrl+Alt+F7 = desktop)"
+	echo "(page 2: Ctrl+Alt+F10 / 'diag 2'; page 3: Ctrl+Alt+F11 / 'diag 3'; Ctrl+Alt+F7 = desktop)"
 }
 page2() {
 	echo "=== Cyberbeest stick diagnostics, page 2 ==="
@@ -50,11 +50,28 @@ page2() {
 	echo "--- memory"; free -m | head -2
 	echo "--- crash records"; coredumpctl list --no-pager 2>&1 | tail -n 3 | cut -c1-120
 }
+page3() {
+	echo "=== Cyberbeest stick diagnostics, page 3 (the desktop session) ==="
+	echo "--- ~/.xsession-errors (first 14 lines)"
+	grep -v '^$' /home/cyberbeest/.xsession-errors 2>/dev/null | head -n 14 | cut -c1-130
+	echo "--- journal: xfce4-session / xfwm4 / xfsettingsd / Xorg"
+	journalctl -b --no-pager 2>/dev/null | grep -E "xfce4-session|xfwm4|xfsettingsd|Xorg|x-0|trap|segfault" | tail -n 8 | cut -c1-130
+	echo "--- saved XFCE sessions (a stale one is restored at login)"
+	ls -la /home/cyberbeest/.cache/sessions 2>&1 | tail -n 4 | cut -c1-110
+	echo "--- xfwm4 compositing setting"
+	grep -E "use_compositing|vblank_mode" /home/cyberbeest/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml 2>&1 | cut -c1-110
+	echo "--- kernel errors / warnings (tail)"
+	dmesg -l err,warn 2>/dev/null | tail -n 8 | cut -c1-130
+	echo "--- crash records"; ls /var/lib/systemd/coredump /var/crash 2>&1 | head -n 4
+}
 case "$1" in
 	2) page2 ;;
+	3) page3 ;;
 	auto)
 		page1 > /run/cyberbeest-diag.txt 2>&1
 		page2 > /run/cyberbeest-diag2.txt 2>&1
+		page3 > /run/cyberbeest-diag3.txt 2>&1
+		{ clear; cat /run/cyberbeest-diag3.txt; } > /dev/tty11 2>/dev/null
 		{ clear; cat /run/cyberbeest-diag2.txt; } > /dev/tty10 2>/dev/null
 		{ clear; cat /run/cyberbeest-diag.txt; } > /dev/tty9 2>/dev/null
 		chvt 9 2>/dev/null ;;

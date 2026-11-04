@@ -179,6 +179,15 @@ python3 - "$WORK" <<'PY'
 import re, sys
 work = sys.argv[1]
 
+# Every live entry gets live-config.username=cyberbeest. Without it live-config sets LightDM's
+# autologin to a user "user" it cannot create (UID 1000 is already the image's cyberbeest), and
+# the desktop boot lands on the login screen asking for a password (2026-11-03).
+USER_PARAM = "live-config.username=cyberbeest"
+def with_user(text, keyword):
+    return re.sub(rf"^(\s*{keyword}\s+.*\bboot=live\b.*)$",
+                  lambda mm: mm.group(1) if USER_PARAM in mm.group(1) else mm.group(1) + " " + USER_PARAM,
+                  text, flags=re.M)
+
 # ---- isolinux: copy the first live label, add cyberbeest-scan, make it the default
 live = open(f"{work}/live.cfg").read()
 blocks = re.split(r"\n(?=label )", live.strip("\n"))
@@ -193,7 +202,7 @@ if "cyberbeest-scan" not in scan:
     sys.exit("isolinux live.cfg: no append line to extend")
 scan += "\n\tmenu default"
 rest = [re.sub(r"^\s*menu default\s*$", "", b, flags=re.M) for b in blocks]
-open(f"{work}/live.cfg", "w").write(scan + "\n\n" + "\n".join(rest) + "\n")
+open(f"{work}/live.cfg", "w").write(with_user(scan + "\n\n" + "\n".join(rest) + "\n", "append"))
 
 # ---- grub: same, as the first menuentry (default=0 stays 0, no timeout is set)
 grub = open(f"{work}/grub.cfg").read()
@@ -205,7 +214,7 @@ entry = re.sub(r"^menuentry [^\n]*\{", "menuentry 'Scan this computer for malwar
 entry = re.sub(r"^(\s*linux\s+.*)$", r"\1 cyberbeest-scan live-config.username=cyberbeest", entry, count=1, flags=re.M)
 if "cyberbeest-scan" not in entry.split("\n", 1)[1]:
     sys.exit("grub.cfg: no linux line to extend")
-open(f"{work}/grub.cfg", "w").write(grub[:m.start()] + entry + grub[m.start():])
+open(f"{work}/grub.cfg", "w").write(with_user(grub[:m.start()] + entry + grub[m.start():], "linux"))
 # scan.cfg: loaded by the installed machine's GRUB straight from the stick;
 # its paths are relative to $root, which that entry sets to the stick.
 # boot at once: the host GRUB's own timeout/menu settings must not stall it
