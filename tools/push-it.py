@@ -297,10 +297,32 @@ def _draft_llm(prompt):
          "--output-format", "json", "--json-schema", SCHEMA],
         input=prompt, capture_output=True, text=True, cwd=ROOT, timeout=240)
     try:
-        data = json.loads(r.stdout)["structured_output"]
+        out = json.loads(r.stdout)
+    except ValueError:
+        out = {}
+    try:
+        data = out["structured_output"]
         return data["summary"].strip(), data["message"].strip()
-    except (ValueError, KeyError, TypeError):
-        raise RuntimeError((r.stderr or r.stdout).strip()[:300] or "empty reply") from None
+    except (KeyError, TypeError):
+        # an error reply is JSON too; show its human-readable "result", not the whole blob
+        err = out.get("result") if isinstance(out, dict) else None
+        raise RuntimeError(err or (r.stderr or r.stdout).strip()[:300] or "empty reply") from None
+
+
+def explain_error(e):
+    """Say what went wrong and what to do about it."""
+    t = str(e)
+    low = t.lower()
+    if "oauth" in low or "authenticate" in low or "/login" in low:
+        return ("Couldn't draft the commit message: the Claude command-line login has expired.\n"
+                "Fix: open a terminal, run  claude  and type  /login , then press refresh here.")
+    if isinstance(e, subprocess.TimeoutExpired):
+        return "Couldn't draft the commit message: Claude took too long. Press refresh to try again."
+    if isinstance(e, FileNotFoundError):
+        return f"Couldn't draft the commit message: Claude isn't installed at {CLAUDE}."
+    if any(w in low for w in ("network", "connect", "resolve", "timed out", "offline")):
+        return "Couldn't draft the commit message: no connection to Claude. Check the network, then refresh."
+    return f"Couldn't draft the commit message: {t}\nPress refresh to try again."
 
 
 # ---- GUI -------------------------------------------------------------------------------------
@@ -352,7 +374,7 @@ class Group(Gtk.Box):
             try:
                 s, m = draft(self.repo_box.repo, self.repo_box.name, paths, self.notes)
             except Exception as e:  # noqa: BLE001
-                s, m = f"Drafting failed: {e}", ""
+                s, m = explain_error(e), ""
             GLib.idle_add(self.set_draft, s, m)
         threading.Thread(target=work, daemon=True).start()
 
