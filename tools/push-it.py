@@ -389,7 +389,14 @@ class Group(Gtk.Box):
 
     def commit(self):
         paths = self.selected()
-        git(self.repo_box.repo, "add", "--", *paths, check=True)
+        repo = self.repo_box.repo
+        # `git add` on an already-staged deletion fails with "pathspec did not match"
+        present = [p for p in paths if os.path.lexists(os.path.join(repo, p))]
+        if present:
+            git(repo, "add", "--", *present, check=True)
+        gone = [p for p in paths if p not in present]
+        if gone:
+            git(repo, "rm", "--cached", "--ignore-unmatch", "-q", "--", *gone, check=True)
         git(self.repo_box.repo, "commit", "-m", f"{self.message()}\n\n{TRAILER}", "--only", "--",
             *paths, check=True)
 
