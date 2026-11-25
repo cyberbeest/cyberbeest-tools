@@ -553,6 +553,7 @@ class App(Gtk.Window):
         self.boxes = []
         self.busy = False
         self.pending = 0  # drafts being generated
+        self.armed = False  # push pre-marked while drafting
         self.sig = None
         self.checking = False
         self.scan()
@@ -668,6 +669,7 @@ class App(Gtk.Window):
         self.stable_status.set_text("  |  ".join(lines))
 
     def scan(self, keep_status=False):
+        self.armed = False
         self.btn.set_sensitive(False)
         self.btn.set_label("Scanning…")
         while Gtk.events_pending():  # paint the label before the blocking fetch
@@ -710,14 +712,24 @@ class App(Gtk.Window):
             return
         self.update_summary()
         if self.pending:
-            self.btn.set_sensitive(False)
-            self.btn.set_label("Drafting commit messages…")
+            self.btn.set_sensitive(True)
+            self.btn.set_label("PUSH IT after drafting: armed  (click to cancel)" if self.armed
+                               else "Drafting…  click to PUSH IT as soon as it's done")
             return
         n = sum(1 for b in self.boxes if b.ready())
+        if self.armed:
+            self.armed = False
+            if n:
+                self.on_push()
+            return
         self.btn.set_sensitive(n > 0)
         self.btn.set_label(f"PUSH IT  ({n} repo{'s' if n != 1 else ''})" if n else "Nothing to push")
 
     def on_push(self, *_):
+        if self.pending:  # pre-mark: the push happens once the drafts are in; click again to undo
+            self.armed = not self.armed
+            self.refresh_buttons()
+            return
         ready = [b for b in self.boxes if b.ready()]
         self.busy = True
         self.btn.set_sensitive(False)
